@@ -16,3 +16,8 @@
 |Source image| Source mask | Target image|
 |---|---|---|
 |<img src="./results/pupu.jpg" height="240px" width="300px" >|<img src="./results/pupu_mask.jpg" height="240px" width="300px" >|<img src="./results/street.jpg" height="750px" width="500px" >
+
+### Result
+|Result|Compare with PS|
+|---|---|
+|<img src="./results/Part2_compare.bmp" height="750px" width="500px" >|<img src="./results/Crayon_ShinChan_onstreet.bmp" height="750px" width="500px" >|
