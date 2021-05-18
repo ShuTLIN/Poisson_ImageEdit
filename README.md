@@ -20,4 +20,4 @@
 ### Result
 |Result|Compare with PS|
 |---|---|
-|<img src="./results/Part2_compare.bmp" height="750px" width="500px" >|<img src="./results/Crayon_ShinChan_onstreet.bmp" height="750px" width="500px" >|
+|<img src="./results/Part2_compare.bmp" height="750px" width="500px" >|<img src="./results/Crayon_ShinChan_onstreet.jpg" height="750px" width="500px" >|
