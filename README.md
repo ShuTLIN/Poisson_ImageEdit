@@ -21,3 +21,6 @@
 |Result|Compare with PS|
 |---|---|
 |<img src="./results/Part2_compare.bmp" height="750px" width="500px" >|<img src="./results/Crayon_ShinChan_onstreet.jpg" height="750px" width="500px" >|
+
+### Poisson seamless cloning & PS
+<img align="center" src="./results/PoissonCloning_and_PS.jpg" height="750px" width="500px" >
