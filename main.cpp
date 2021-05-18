@@ -9,21 +9,14 @@
 #include <math.h>
 #include <map>
 
-
 #include <Dense>
 #include <Sparse>
+#define Poisson 0
 
 typedef Eigen::SparseMatrix<double> SpMat;
 typedef Eigen::Triplet<double> Triplet;
 typedef Eigen::VectorXd Vec;
 using namespace std;
-
-int xyn2oneD(int x, int y, int n, int iw) {
-    return x*3+n+(y*iw*3);
-}
-
-// gamma correction constant.
-constexpr float GAMMA = 2.2f;
 
 class vec3 {
 private:
@@ -41,7 +34,18 @@ public:
     float& operator[] (int index) { return ((float*)(this))[index]; }
 };
 
+class loadImg {
+public:
+    int width, hight, n;
+    unsigned char* idata;
+    loadImg(string path) {
+        idata = stbi_load(path.c_str(), &width, &hight, &n, 0);
+        cout << "w: " << width << ", h: " << hight << ", n: " << n << endl;
+    }
+};
+
 float clamp(float x) {
+    
     if (x > 1.0f) {
         return 1.0f;
     }
@@ -53,40 +57,11 @@ float clamp(float x) {
     }
 }
 
-class loadImg {
-    public:
-        int width, hight, n;
-        unsigned char* channel1;
-        unsigned char* channel2;
-        unsigned char* channel3;
-        unsigned char* idata;
-        loadImg(string path) {
-            idata = stbi_load(path.c_str(), &width, &hight, &n, 0);
-            cout << "w: " << width << ", h: " << hight << ", n: " << n << endl;
-        }
-
-        void splitChannel() {
-            auto* red = (unsigned char*)malloc(width * hight );
-            auto* green = (unsigned char*)malloc(width * hight);
-            auto* blue = (unsigned char*)malloc(width * hight);
-            for (int j = 0; j < hight; j++) {
-                for (int i = 0; i < width; i++) {
-                    red[i   + j * width] = idata[i * 3 + 0 + j * width * 3];
-                    green[i   + j * width] = idata[i * 3 + 1 + j * width * 3];
-                    blue[i   + j * width ] = idata[i * 3 + 2 + j * width * 3];
-                }
-            }
-            channel1 = red;
-            channel2 = green;
-            channel3 = blue;
-        }
-};
-
-int targetFlatten(unsigned int x, unsigned int y, int targetImage_width) {
+unsigned int targetFlatten(unsigned int x, unsigned int y, unsigned int targetImage_width) {
     return  targetImage_width * y*3 + x*3;
 }
 
-unsigned int maskFlatten(unsigned int x, unsigned int y, int maskImage_width) {
+unsigned int maskFlatten(unsigned int x, unsigned int y, unsigned int maskImage_width) {
     return  maskImage_width * y*3 + x*3;
 }
 
@@ -102,28 +77,146 @@ float vpq(
     float fdiff = fpstar - fqstar;
     float gdiff = gp - gq;
 
-    // equation (11) in the paper.
+    //gradient
     return gdiff;
 
 }
 
+void Poisson_restore(loadImg target,unsigned char* odata) {
+    std::map<unsigned int, unsigned int> varMap;
+    int i = 0;
+    for (unsigned int y = 0; y < target.hight; ++y) {
+        for (unsigned int x = 0; x < target.width; ++x) {
+            if (isMaskPixel(x, y, target)) {
+                varMap[maskFlatten(x, y, target.width)] = i;
+                ++i;
+            }
+        }
+    }
+
+    unsigned int numUnknowns = (unsigned int)varMap.size();
+
+    std::vector<Triplet> mt; // M triplets. sparse matrix entries of M matrix.
+    {
+        unsigned int irow = 0;
+        for (unsigned int y = 0; y < target.hight; ++y) {
+            for (unsigned int x = 0; x < target.width; ++x) {
+                if (isMaskPixel(x , y , target)) {
+
+                    mt.push_back(Triplet(irow, varMap[maskFlatten(x , y, target.width)], 4)); // |N_p| = 4.
+
+
+                    if (isMaskPixel(x , y  - 1, target)) {
+                        mt.push_back(Triplet(irow, varMap[maskFlatten(x , y - 1, target.width)], -1));
+                    }
+                    if (isMaskPixel(x  + 1, y, target)) {
+                        mt.push_back(Triplet(irow, varMap[maskFlatten(x  + 1, y, target.width)], -1));
+                    }
+                    if (isMaskPixel(x , y  + 1, target)) {
+                        mt.push_back(Triplet(irow, varMap[maskFlatten(x , y  + 1, target.width)], -1));
+                    }
+                    if (isMaskPixel(x - 1, y , target)) {
+                        mt.push_back(Triplet(irow, varMap[maskFlatten(x - 1, y , target.width)], -1));
+                    }
+
+                    ++irow; // jump to the next row in the matrix.
+                }
+            }
+        }
+    }
+
+    Eigen::SimplicialCholesky<SpMat> solver;
+    {
+        SpMat mat(numUnknowns, numUnknowns);
+        mat.setFromTriplets(mt.begin(), mt.end());
+        solver.compute(mat);
+    }
+
+    Vec solutionChannels;
+    Vec b(numUnknowns);
+
+        /*
+        For each of the three color channels RGB, there will be a different b vector.
+        So to perform poisson blending on the entire image, we must solve for x three times in a row, one time for each channel.
+        */
+        unsigned int irow = 0;
+
+        for (unsigned int y =0; y <target.hight; ++y) {
+            for (unsigned int x =0; x < target.width; ++x) {
+
+                if (isMaskPixel(x , y , target)) {
+                    // we only ended up using v in the end.
+                   
+                    float u = (float)target.idata[targetFlatten(x, y, target.width)] / 255.0;
+
+                    /*
+                    sum up all the values of v_pq(the gradient) for all neighbours.
+                    */
+                    float grad = 0;
+                        
+
+                    b[irow] = grad;
+
+                    /*
+                    due to the boundary condition, some values of f_q end up on the right-hand-side, because they are not unknown.
+                    The ones outside the mask end up here.
+                    */
+                    if (!isMaskPixel(x , y  - 1, target)) {
+                        b[irow] += (float)target.idata[targetFlatten(x, y - 1, target.width)] / 255.0;
+                    }
+                    if (!isMaskPixel(x  + 1, y , target)) {
+                        b[irow] += (float)target.idata[targetFlatten(x + 1, y, target.width)] / 255.0;
+                    }
+                    if (!isMaskPixel(x , y  + 1, target)) {
+                        b[irow] += (float)target.idata[targetFlatten(x, y + 1, target.width)] / 255.0;
+                    }
+                    if (!isMaskPixel(x  - 1, y , target)) {
+                        b[irow] += (float)target.idata[targetFlatten(x - 1, y, target.width)] / 255.0;
+                    }
+
+                    ++irow;
+
+                }
+            }
+        }
+
+        // solve for channel number ic.
+        solutionChannels = solver.solve(b);
+        for (int j = 0; j < target.hight; j++) {
+            for (int i = 0; i < target.width; i++) {
+                if (isMaskPixel(i, j, target)) {
+                    unsigned int k = varMap[maskFlatten(i, j, target.width)];
+                    float col = solutionChannels[k];
+
+                    odata[i * 3 + 0 + j * target.width * 3] = (unsigned char)(col * 255.0);
+                    odata[i * 3 + 1 + j * target.width * 3] = (unsigned char)(col * 255.0);
+                    odata[i * 3 + 2 + j * target.width * 3] = (unsigned char)(col * 255.0);
+                }
+            }
+        }
+
+    }
+
+
+
 int main(int argc, char **argv)
 {
-    string inputPath = "pool-target.jpg";
-    string sourcePath = "bear.jpg";
-    string maskPath = "bear-mask.jpg";
-    
-    //int iw, ih, n;
+    string inputPath = "street.jpg";
+    string restorePath = "einsteinSample.bmp";
+    string sourcePath = "pupu.jpg";
+    string maskPath = "pupu_mask.jpg";
+
     
     loadImg target(inputPath);
     loadImg source(sourcePath);
     loadImg source_mask(maskPath);
-    target.splitChannel();
-    
+    loadImg restore_target(restorePath);
+   
+  
+    //offset
+    unsigned int mx = 90;
+    unsigned int my = 520;
 
-    unsigned int mx=0;
-    unsigned int my=0;
-    
     std::map<unsigned int, unsigned int> varMap;
     {
         int i = 0;
@@ -144,10 +237,10 @@ int main(int argc, char **argv)
         for (unsigned int y = my; y < my + source_mask.hight; ++y) {
             for (unsigned int x = mx; x < mx + source_mask.width; ++x) {
                 if (isMaskPixel(x - mx, y - my, source_mask)) {
-                   
+
                     mt.push_back(Triplet(irow, varMap[maskFlatten(x - mx, y - my, source_mask.width)], 4)); // |N_p| = 4.
 
-                    
+
                     if (isMaskPixel(x - mx, y - my - 1, source_mask)) {
                         mt.push_back(Triplet(irow, varMap[maskFlatten(x - mx, y - 1 - my, source_mask.width)], -1));
                     }
@@ -182,131 +275,120 @@ int main(int argc, char **argv)
         /*
         For each of the three color channels RGB, there will be a different b vector.
         So to perform poisson blending on the entire image, we must solve for x three times in a row, one time for each channel.
-
         */
-
         unsigned int irow = 0;
 
         for (unsigned int y = my; y < my + source.hight; ++y) {
             for (unsigned int x = mx; x < mx + source.width; ++x) {
 
-                if (isMaskPixel(x - mx, y - my,source_mask)) {
+                if (isMaskPixel(x - mx, y - my, source_mask)) {
                     // we only ended up using v in the end.
-                    int v = source.idata[maskFlatten(x - mx, y - my,source_mask.width)];
-                    int u = target.idata[targetFlatten(x, y,target.width)];
+                    float v = (float)source.idata[maskFlatten(x - mx, y - my, source_mask.width) + ic] / 255.0;
+                    float u = (float)target.idata[targetFlatten(x, y, target.width) + ic] / 255.0;
 
                     /*
-                    The right-hand side of (7) determines the value of b.
-                    below, we sum up all the values of v_pq(the gradient) for all neighbours.
+                    sum up all the values of v_pq(the gradient) for all neighbours.
                     */
                     float grad =
                         vpq(
-                            u, target.idata[targetFlatten(x, y - 1, target.width)], // unused
-                            v, source.idata[maskFlatten(x - mx, y - 1 - my, source_mask.width)]) // used
+                            u, target.idata[targetFlatten(x, y - 1, target.width) + ic], // unused
+                            v, (float)source.idata[maskFlatten(x - mx, y - 1 - my, source_mask.width) + ic] / 255.0) // used
                         +
                         vpq(
-                            u, target.idata[targetFlatten(x - 1, y, target.width)], // unused
-                            v, source.idata[maskFlatten(x - 1 - mx, y - my, source_mask.width)]) // used
+                            u, target.idata[targetFlatten(x - 1, y, target.width) + ic], // unused
+                            v, (float)source.idata[maskFlatten(x - 1 - mx, y - my, source_mask.width) + ic] / 255.0) // used
                         +
                         vpq(
-                            u, target.idata[targetFlatten(x, y + 1, target.width)], // unused
-                            v, source.idata[maskFlatten(x - mx, y + 1 - my, source_mask.width)] // used
-                        )
+                            u, target.idata[targetFlatten(x, y + 1, target.width) + ic], // unused
+                            v, (float)source.idata[maskFlatten(x - mx, y + 1 - my, source_mask.width) + ic] / 255.0) // used
                         +
                         vpq(
-                            u, target.idata[targetFlatten(x + 1, y, target.width)], // unused
-                            v, source.idata[maskFlatten(x + 1 - mx, y - my, source_mask.width)]); // used
+                            u, target.idata[targetFlatten(x + 1, y, target.width) + ic], // unused
+                            v, (float)source.idata[maskFlatten(x + 1 - mx, y - my, source_mask.width) + ic] / 255.0); // used
 
                     b[irow] = grad;
 
                     /*
-                    Finally, due to the boundary condition, some values of f_q end up on the right-hand-side, because they are not unknown.
-
+                    due to the boundary condition, some values of f_q end up on the right-hand-side, because they are not unknown.
                     The ones outside the mask end up here.
                     */
                     if (!isMaskPixel(x - mx, y - my - 1, source_mask)) {
-                        b[irow] += target.idata[targetFlatten(x, y - 1, target.width)];
+                        b[irow] += (float)target.idata[targetFlatten(x, y - 1, target.width) + ic] / 255.0;
                     }
                     if (!isMaskPixel(x - mx + 1, y - my, source_mask)) {
-                        b[irow] += target.idata[targetFlatten(x + 1, y, target.width)];
+                        b[irow] += (float)target.idata[targetFlatten(x + 1, y, target.width) + ic] / 255.0;
                     }
                     if (!isMaskPixel(x - mx, y - my + 1, source_mask)) {
-                        b[irow] += target.idata[targetFlatten(x, y + 1, target.width)];
+                        b[irow] += (float)target.idata[targetFlatten(x, y + 1, target.width) + ic] / 255.0;
                     }
                     if (!isMaskPixel(x - mx - 1, y - my, source_mask)) {
-                        b[irow] += target.idata[targetFlatten(x - 1, y, target.width)];
+                        b[irow] += (float)target.idata[targetFlatten(x - 1, y, target.width) + ic] / 255.0;
                     }
 
                     ++irow;
+
                 }
             }
         }
 
         // solve for channel number ic.
-        solutionChannels[0] = solver.solve(b);
+        solutionChannels[ic] = solver.solve(b);
     }
 
 
-    auto *odata = (unsigned char *) malloc(target.width * target.hight * target.n);
-    
-    for(int j=0; j< target.hight; j++) {
-        for(int i=0; i< target.width; i++) {
-               /* odata[i*3+0+j* target.width *3] = target.idata[i*3+0+j*  target.width *3];
-                odata[i*3+1+j* target.width *3] = target.idata[i*3+1+j* target.width *3];
-                odata[i*3+2+j*target.width *3] = target.idata[i*3+2+j*  target.width *3];*/
-                odata[i * 3 + 0 + j * target.width * 3] = target.channel1[i  + j * target.width ];
-                odata[i * 3 + 1 + j * target.width * 3] = target.channel1[i  + j * target.width ];
-                odata[i * 3 + 2 + j * target.width * 3] = target.channel1[i  + j * target.width ];
-            }
-    }
-    
+    auto* Part1data = (unsigned char*)malloc(target.width * target.hight * target.n);
+    auto* Part2data = (unsigned char*)malloc(restore_target.width * restore_target.hight * restore_target.n);
 
-    for(int j = 0; j < source_mask.hight; j++) {
-        for(int i = 0; i < source_mask.width; i++) {
-           /* if (((int)source_mask.idata[i * 3 + 0 + j * source_mask.width * 3] >= 255*0.9)) {
-                odata[i * 3 + 0 + j * target.width * 3] = source.idata[i * 3 + 0 + j * source.width * 3];
-                odata[i * 3 + 1 + j * target.width * 3] = source.idata[i * 3 + 1 + j * source.width * 3];
-                odata[i * 3 + 2 + j * target.width * 3] = source.idata[i * 3 + 2 + j * source.width * 3];
-            }*/
-            if (isMaskPixel(i, j,source_mask)) {
-                unsigned int k = varMap[maskFlatten(i, j,source_mask.width)];
-                float col = solutionChannels[0][k];
-                //std::cout << col << std::endl;
-                if (col < 0) {
-                    col = 0.0;
-                }
-                //col = clamp(col);
-                
-                odata[i * 3 + 0 + j * target.width * 3] = (unsigned char)col;
-                odata[i * 3 + 1 + j * target.width * 3] = (unsigned char)col;
-                odata[i * 3 + 2 + j * target.width * 3] = (unsigned char)col;
-            }
+    for (int j = 0; j < target.hight; j++) {
+        for (int i = 0; i < target.width; i++) {
+            Part1data[i * 3 + 0 + j * target.width * 3] = target.idata[i * 3 + 0 + j * 3 * target.width];
+            Part1data[i * 3 + 1 + j * target.width * 3] = target.idata[i * 3 + 1 + j * 3 * target.width];
+            Part1data[i * 3 + 2 + j * target.width * 3] = target.idata[i * 3 + 2 + j * 3 * target.width];
         }
     }
+    
 
-    string outputPath = "out.bmp";
-    cout << (int)source_mask.idata[65 * 3 + 0 + 50 * 107 * 3] << endl;
-    // write
-    stbi_write_png(outputPath.c_str(), target.width, target.hight, target.n, odata, 0);
+    if (Poisson) {
+        for (int j = 0; j < restore_target.hight; j++) {
+            for (int i = 0; i < restore_target.width; i++) {
+                Part2data[i * 3 + 0 + j * restore_target.width * 3] = restore_target.idata[i * 3 + 0 + j * 3 * restore_target.width];
+                Part2data[i * 3 + 1 + j * restore_target.width * 3] = restore_target.idata[i * 3 + 1 + j * 3 * restore_target.width];
+                Part2data[i * 3 + 2 + j * restore_target.width * 3] = restore_target.idata[i * 3 + 2 + j * 3 * restore_target.width];
+            }
+        }
+        Poisson_restore(restore_target, Part2data);
+        string outputPath = "out.bmp";
+        // write
+        stbi_write_png(outputPath.c_str(), restore_target.width, restore_target.hight, restore_target.n, Part2data, 0);
+        stbi_image_free(restore_target.idata);
+        stbi_image_free(Part2data);
+    }
+    else
+    {
+        for (int j = 0; j < source_mask.hight; j++) {
+            for (int i = 0; i < source_mask.width; i++) {
+                if (isMaskPixel(i, j, source_mask)) {
+                    unsigned int offset_position = mx * 3 + my * target.width * 3;
+                    unsigned int k = varMap[maskFlatten(i, j, source_mask.width)];
+                    vec3 col = vec3((float)solutionChannels[0][k], (float)solutionChannels[1][k], (float)solutionChannels[2][k]);
 
-    stbi_image_free(target.idata);
-    stbi_image_free(odata);
+                    col[0] = clamp(col[0]);
+                    col[1] = clamp(col[1]);
+                    col[2] = clamp(col[2]);
 
-   /* Eigen::Matrix3f A;
-    Eigen::Vector3f b;
-    A << 1, 2, 3, 4, 5, 6, 7, 8, 10;
-    b << 3, 3, 4;
-    cout << "Here is the matrix A:\n" << A << endl;
-    cout << "Here is the vector b:\n" << b << endl;
-    Eigen::Vector3f x = A.colPivHouseholderQr().solve(b);
-    cout << "The solution is:\n" << x << endl;
+                    Part1data[offset_position + i * 3 + 0 + j * target.width * 3] = (unsigned char)(col[0] * 255.0);
+                    Part1data[offset_position + i * 3 + 1 + j * target.width * 3] = (unsigned char)(col[1] * 255.0);
+                    Part1data[offset_position + i * 3 + 2 + j * target.width * 3] = (unsigned char)(col[2] * 255.0);
+                }
+            }
+        }
 
-    Eigen::MatrixXd m(2, 2);
-    m(0, 0) = 3;
-    m(1, 0) = 2.5;
-    m(0, 1) = -1;
-    m(1, 1) = m(1, 0) + m(0, 1);
-    std::cout << m << std::endl;*/
-    cin.get();
+        string outputPath = "out.bmp";
+        // write
+        stbi_write_png(outputPath.c_str(), target.width, target.hight, target.n, Part1data, 0);
+        stbi_image_free(target.idata);
+        stbi_image_free(Part1data);
+    }
+    //cin.get();
    return 0;
 }
