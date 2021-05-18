@@ -1,6 +1,9 @@
 # Poisson_ImageEdit
 
-# Implement Result
-<img src="./results/out.bmp" height="333px" width="250px" >
+## Part1 Poisson Image Completion
+|Target Image| With stains |
+|---|---|
+|<img src="./results/einstein.jpg" height="333px" width="250px" >|<img src="./results/einsteinSample.jpg" height="333px" width="250px" >|
+
 
 
