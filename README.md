@@ -15,4 +15,4 @@
 ## Part2 Poisson Seamless Cloning
 |Source image| Source mask | Target image|
 |---|---|---|
-|<img src="./results/bear.jpg" height="107px" width="130px" >|<img src="./results/bear-mask.jpg" height="107px" width="130px" >|<img src="./results/pool-target.jpg" height="333px" width="250px" >
+|<img src="./results/pupu.jpg" height="240px" width="300px" >|<img src="./results/pupu_mask.jpg" height="240px" width="300px" >|<img src="./results/street.jpg" height="750px" width="500px" >
