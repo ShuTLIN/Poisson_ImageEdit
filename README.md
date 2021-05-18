@@ -9,10 +9,10 @@
 ### Result
 |Result|Compare with PS|
 |---|---|
-|<img src="./results/Part1_result.bmp" height="300px" width="250px" >|<img src="./results/Part1_with_ps.gif" height="300px" width="250px" >|
+|<img src="./results/Part1_result.bmp" height="300px" width="250px" >|<img src="./results/Part1_compare.gif" height="300px" width="250px" >|
 
 
 ## Part2 Poisson Seamless Cloning
 |Source image| Source mask | Target image|
 |---|---|---|
-|<img src="./results/bear.jpg" height="300px" width="250px" >|<img src="./results/pool-target.jpg" height="300px" width="250px" >|<img src="./results/bear-mask.jpg" height="300px" width="550px" >
+|<img src="./results/bear.jpg" height="107px" width="130px" >|<img src="./results/bear-mask.jpg" height="107px" width="130px" >|<img src="./results/pool-target.jpg" height="333px" width="250px" >
